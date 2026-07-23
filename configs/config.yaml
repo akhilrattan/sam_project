@@ -1,0 +1,116 @@
+# ==========================================================
+# Central configuration for SAM-Assisted TrashNet Classification
+# ==========================================================
+
+project:
+  name: "sam_trashnet_classification"
+  seed: 42
+
+# ---------------- Paths ----------------
+paths:
+  raw_dir: "data/raw/trashnet"
+  annotations_dir: "data/annotations_generated/trashnet"
+  processed_dir: "data/processed/trashnet"
+  splits_dir: "data/splits"
+  experiments_dir: "experiments/runs"
+  results_dir: "results"
+
+# ---------------- Dataset ----------------
+dataset:
+  name: "trashnet"
+  # Kaggle dataset slug for kagglehub download.
+  # garythung/trashnet's original 6-class split is commonly mirrored on Kaggle
+  # as "asdasdasasdas/garbage-classification" (nested folder, but
+  # download_dataset.py already flattens nested class-folders automatically).
+  # Swap this for whichever TrashNet mirror slug you're actually using.
+  kaggle_slug: "asdasdasasdas/garbage-classification"
+  # TrashNet has 6 classes. Folder names from the original garythung/trashnet
+  # release are lowercase - these MUST match your raw_dir class-folder names
+  # exactly (clean_and_split.py reads folder names directly from disk).
+  classes:
+    - "cardboard"
+    - "glass"
+    - "metal"
+    - "paper"
+    - "plastic"
+    - "trash"
+  image_size: 224
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+# ---------------- Annotation generation (no ground truth exists) ----------------
+# LEGACY / OPTIONAL: only used if you deliberately run detect_bboxes_yolo.py
+# yourself. It is NOT part of the default pipeline anymore - bbox_cropped now
+# gets its boxes from SAM (see `sam` section below), not YOLO.
+annotation:
+  yolo_weights: "yolov8n.pt"     # auto-downloaded by ultralytics on first run
+  yolo_conf_threshold: 0.15      # low threshold -> waste items are not COCO classes,
+                                  # we just want the most salient bounding box
+  fallback_margin_ratio: 0.08    # if YOLO finds nothing, fallback heuristic box
+                                  # crops full image minus this margin fraction on each side
+
+sam:
+  model_type: "vit_b"                       # smallest official SAM checkpoint (~375MB)
+  checkpoint_path: "checkpoints/sam_vit_b_01ec64.pth"
+  checkpoint_url: "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+  mask_background: "white"                  # background fill for segmented crops: white | black
+  # If SAM's automatic mask generator finds no valid candidate mask for an
+  # image, fall back to a heuristic box: full image minus this margin
+  # fraction on each side (same idea as the old YOLO fallback).
+  bbox_fallback_margin_ratio: 0.08
+  # Automatic mask generation directly on RAW images (no YOLO box prompt) -
+  # used by src/annotation_generation/sam_auto_segment.py. This is now the
+  # SOLE source of bounding boxes for `bbox_cropped` as well as masks for
+  # `sam_segmented` - a single SAM pass produces both.
+  automatic_mask_generator:
+    points_per_side: 24            # lower = faster, fewer candidate masks (default SAM: 32)
+    pred_iou_thresh: 0.86
+    stability_score_thresh: 0.90
+    min_mask_region_area: 500      # discard tiny noise masks (pixels)
+    min_area_fraction: 0.03        # candidate mask must cover >= 3% of the image
+
+# ---------------- Preprocessing variants ----------------
+# NOTE: `fused` (two-stream late fusion of original + bbox_cropped) is also
+# trainable via --variant fused, but it is NOT listed here since it needs no
+# preprocessing of its own - see VARIANTS in run_pipeline.py.
+variants:
+  - "original"
+  - "bbox_cropped"
+  - "sam_segmented"
+
+# ---------------- Augmentation (training split only) ----------------
+augmentation:
+  enabled: true
+  random_horizontal_flip: 0.5
+  random_vertical_flip: 0.2
+  random_rotation_deg: 20
+  color_jitter:
+    brightness: 0.25
+    contrast: 0.25
+    saturation: 0.25
+    hue: 0.05
+  random_resized_crop_scale: [0.75, 1.0]
+
+# ---------------- Models ----------------
+models:
+  - "mobilenet_v3"
+  - "efficientnet_b0"
+
+# ---------------- Training ----------------
+training:
+  epochs: 30
+  batch_size: 32
+  lr: 0.0003
+  weight_decay: 0.00001
+  optimizer: "adamw"
+  scheduler: "cosine"
+  early_stopping_patience: 8
+  num_workers: 4
+  device: "cuda"   # falls back to cpu automatically if unavailable
+
+# ---------------- Evaluation ----------------
+evaluation:
+  n_prediction_samples: 24        # number of correct / incorrect prediction images to save
+  benchmark_runs: 100             # forward passes used to time inference speed
+  benchmark_warmup: 10
